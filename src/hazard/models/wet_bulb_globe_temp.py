@@ -137,7 +137,7 @@ class WetBulbGlobeTemperatureAboveIndicator(
     ) -> xr.DataArray:
         """Create DataArrays containing indicators the thresholds for a single year."""
         tas_c = tas - 273.15  # convert from K to C
-        # vpp is water vapour partial pressure in kPa
+        # vpp is water vapour partial pressure in hPa
         vpp = (hurs / 100.0) * 6.105 * np.exp((17.27 * tas_c) / (237.7 + tas_c))
         wbgt = 0.567 * tas_c + 0.393 * vpp + 3.94
         scale = 365.0 / len(wbgt.time)

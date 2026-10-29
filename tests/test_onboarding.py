@@ -128,6 +128,20 @@ def test_sync_named_hazard(test_output_dir, s3_credentials):
 
 
 @pytest.mark.manual
+def test_backup_prod_to_local():
+    """Back up the whole production hazard.zarr to local disk.
+
+    The first run downloads everything; later runs download only files that are
+    missing or changed. The (public) bucket is read anonymously, so no credentials
+    are needed, and local files no longer in the bucket are kept. Run with dry_run = True first to see the number of files
+    and size of the download.
+    """
+    dry_run = False
+    zarr_dir = "/mnt/data/hazard-indicators-prod/hazard.zarr"
+    s3_utilities.sync_prod_to_local(zarr_dir, dry_run=dry_run)
+
+
+@pytest.mark.manual
 def test_create_maps_from_prod_readonly(test_output_dir):
     """Generate maps locally from the array data already on the production bucket.
 
