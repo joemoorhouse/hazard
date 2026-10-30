@@ -15,7 +15,10 @@ from hazard.utilities.s3_utilities import get_store  # type: ignore
 def test_create_inventory(test_output_dir):
     """Create inventory for the published hazards and write into the test output
     directory (see hazard.get_inventory_hazards for which hazards are included).
+
+    With heat_v3, the v3 chronic heat indicators replace the v2 ones.
     """
+    heat_v3 = False
     # zarr_utilities.set_credential_env_variables()
 
     docs_store = DocStore(
@@ -24,7 +27,7 @@ def test_create_inventory(test_output_dir):
         )
     )
 
-    hazard_map = get_inventory_hazards()
+    hazard_map = get_inventory_hazards(heat_v3=heat_v3)
     models = [
         initialize_class(hazard, hazard_map, source_dir_base=test_output_dir)
         for hazard in hazard_map

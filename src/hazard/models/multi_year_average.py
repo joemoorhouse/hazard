@@ -1,6 +1,7 @@
 """Module for calculating multi-year average indicators for climate hazard models."""
 
 import logging
+import time
 from abc import abstractmethod
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -80,6 +81,9 @@ class MultiYearAverageIndicatorBase(IndicatorModel[T]):
     _default_central_year_historical: int = 2005
     _default_central_years: Iterable[int] = [2030, 2040, 2050]
     _default_source_dataset: str = "NEX-GDDP-CMIP6"
+    # if set, arrays are written in chunks of this size in latitude and longitude, the whole of the
+    # index dimension being in each chunk; otherwise the target's default chunking is used
+    chunk_size_lat_lon: Optional[int] = None
 
     def __init__(
         self,
@@ -121,8 +125,19 @@ class MultiYearAverageIndicatorBase(IndicatorModel[T]):
         averaged_indicators = self._averaged_indicators(client, source, target, item)
         for indicator in averaged_indicators:
             indicator.array.attrs["crs"] = CRS.from_epsg(4326)
-            logger.info(f"Writing array to {str(indicator.path)}")
-            target.write(str(indicator.path), indicator.array)
+            logger.info(
+                f"{type(self).__name__}: writing array to {str(indicator.path)}"
+            )
+            target.write(
+                str(indicator.path),
+                indicator.array,
+                chunks=self._write_chunks(indicator.array),
+            )
+
+    def _write_chunks(self, array: xr.DataArray) -> Optional[List[int]]:
+        if self.chunk_size_lat_lon is None:
+            return None
+        return [array.shape[0], self.chunk_size_lat_lon, self.chunk_size_lat_lon]
 
     def _years(self, _: OpenDataset, item: Averageable):
         return range(
@@ -140,7 +155,8 @@ class MultiYearAverageIndicatorBase(IndicatorModel[T]):
         """Calculate average annual degree days for given window for the GCM and scenario specified."""
         years = self._years(source, item)
         logger.info(
-            f"Calculating average indicator for batch item {str(item)}, years={list(years)}"
+            f"{type(self).__name__}: calculating average indicator for batch item {str(item)}, "
+            f"years={list(years)}"
         )
         futures = []
         for year in years:
@@ -295,6 +311,8 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
     default_thresholds: Sequence[float]
     # units of the thresholds, i.e. of the values of the "threshold" dimension
     threshold_units: str = "°C"
+    # small chunks, for fast look-up of the indicators at single locations
+    chunk_size_lat_lon = 500
 
     def __init__(
         self,
@@ -382,9 +400,17 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
                 f"resolution of source ({source_resolution}) does not match that of the run "
                 f"({self.run.resolution}); set RunConfig.resolution"
             )
+        name = type(self).__name__
+        logger.info(
+            f"{name}: starting run of {len(list(self.batch_items()))} batch items, indicators "
+            f"{', '.join(r.indicator_id for r in self.resources.values())}, thresholds {self.thresholds}"
+        )
+        start = time.perf_counter()
         super().run_all(source, target, client=client, debug_mode=debug_mode)
         if self.run.multi_model:
+            logger.info(f"{name}: calculating multi-model mean")
             self.calculate_multi_model(target)
+        logger.info(f"{name}: run complete in {time.perf_counter() - start:.0f} s")
 
     def calculate_multi_model(self, target: ReadWriteDataArray):
         """Calculate the mean over the GCMs of each array, written with gcm=MULTI_MODEL_ID.
@@ -421,13 +447,17 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
             path = self.resources[key].path.format(
                 gcm=MULTI_MODEL_ID, scenario=scenario, year=central_year
             )
-            logger.info(f"Writing multi-model mean array to {path}")
-            target.write(path, mean)
+            logger.info(
+                f"{type(self).__name__}: writing multi-model mean array to {path}"
+            )
+            target.write(path, mean, chunks=self._write_chunks(mean))
 
     def _calculate_single_year_indicators(
         self, source: OpenDataset, item: ThresholdBatchItem, year: int
     ) -> List[Indicator]:
-        logger.info(f"Starting calculation for {item}, year {year}")
+        logger.info(
+            f"{type(self).__name__}: starting calculation for {item}, year {year}"
+        )
         with ExitStack() as stack:
             inputs = {
                 quantity: stack.enter_context(
@@ -440,7 +470,9 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
             # inputs must be on identical grids: raise rather than silently align
             with xr.set_options(arithmetic_join="exact"):
                 arrays = self._single_year_arrays(inputs)
-        logger.info(f"Calculation complete for {item}, year {year}")
+        logger.info(
+            f"{type(self).__name__}: calculation complete for {item}, year {year}"
+        )
         return [
             Indicator(
                 array=arrays[key].assign_attrs(units=resource.units),

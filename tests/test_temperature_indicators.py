@@ -295,10 +295,36 @@ def test_v3_zarr_threshold_dimension_and_units():
         assert attrs["threshold_values"] == [25.0, 30.0]
         assert attrs["threshold_units"] == "°C"
         assert attrs["units"] == "days/year"
+        assert target.root[path].chunks == (2, 500, 500)
         da = target.read(path)
         assert da.dims == ("threshold", "latitude", "longitude")
         assert da["threshold"].attrs["units"] == "°C"
         assert da.attrs["units"] == "days/year"
+
+
+def test_v3_zarr_write_lazy_array_whole_chunks():
+    """An array read (lazily) from a Zarr store can be written back, including chunks it covers whole.
+
+    As for the multi-model mean, calculated from the arrays of each GCM read from the target.
+    """
+    target = OscZarr(store=zarr.MemoryStore())
+    model = DaysTasAboveIndicator(
+        thresholds=[25.0, 30.0],
+        run=RunConfig(
+            window_years=2,
+            gcms=["ACCESS-CM2"],
+            scenarios=["ssp585"],
+            central_years=[2030],
+        ),
+    )
+    model.run_all(
+        create_test_source_tas_tasmax_hurs(["ACCESS-CM2"]), target, debug_mode=True
+    )
+    da = target.read("chronic_heat/osc/v3/days_tasmax_above_ACCESS-CM2_ssp585_2030")
+    # chunks smaller than the array, so that some are covered whole
+    chunks = [da.shape[0], da.shape[1] // 2, da.shape[2] // 2]
+    target.write("test/lazy", da, chunks=chunks)
+    np.testing.assert_array_equal(target.read("test/lazy").values, da.values)
 
 
 def test_v3_source_resolution_mismatch():
