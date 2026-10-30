@@ -284,6 +284,8 @@ class OscZarr(ReadWriteDataArray):
                 da_norm.dims[0]
             ].data,  # the index dimension; allow to have name other than 'index'
             chunks=chunks,
+            index_units=da_norm[da_norm.dims[0]].attrs.get("units", ""),
+            units=da_norm.attrs.get("units"),
         )
         z[:, :, :] = data[:, :, :]
 

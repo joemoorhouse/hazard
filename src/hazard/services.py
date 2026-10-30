@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 from dask.distributed import Client, LocalCluster  # noqa: E402
 
 from hazard.docs_store import DocStore  # type: ignore # noqa: E402
-from hazard.models.days_tas_above import DaysTasAboveIndicator  # noqa: E402
+from hazard.models.deprecated_v2 import DaysTasAboveIndicatorDeprecated  # noqa: E402
 from hazard.models.degree_days import DegreeDays  # noqa: E402
 from hazard.sources import SourceDataset, get_source_dataset_instance
 from hazard.sources.osc_zarr import OscZarr  # noqa: E402
@@ -47,7 +47,7 @@ def days_tas_above_indicator(
     )
     source = get_source_dataset_instance(source_dataset, source_dataset_kwargs)
 
-    model = DaysTasAboveIndicator(
+    model = DaysTasAboveIndicatorDeprecated(
         threshold_temps_c=threshold_list,
         window_years=window_years,
         gcms=gcm_list,

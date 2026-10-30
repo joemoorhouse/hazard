@@ -19,6 +19,15 @@ from hazard.models.degree_days import DegreeDays as _DegreeDays
 from hazard.models.degree_days import (
     HeatingCoolingDegreeDays as _HeatingCoolingDegreeDays,
 )
+from hazard.models.deprecated_v2 import (
+    DaysTasAboveIndicatorDeprecated as _DaysTasAboveIndicatorDeprecated,
+)
+from hazard.models.deprecated_v2 import (
+    HeatingCoolingDegreeDaysDeprecated as _HeatingCoolingDegreeDaysDeprecated,
+)
+from hazard.models.deprecated_v2 import (
+    WetBulbGlobeTemperatureAboveIndicator as _WetBulbGlobeTemperatureAboveIndicator,
+)
 from hazard.models.drought_index import DroughtIndicator as _DroughtIndicator
 from hazard.models.drought_index import local_zarr_working_store
 from hazard.models.water_temp import FutureStreamsSource
@@ -26,7 +35,7 @@ from hazard.models.water_temp import (
     WaterTemperatureAboveIndicator as _WaterTemperatureAboveIndicator,
 )
 from hazard.models.wet_bulb_globe_temp import (
-    WetBulbGlobeTemperatureAboveIndicator as _WetBulbGlobeTemperatureAboveIndicator,
+    DaysWBGTAboveIndicator as _DaysWBGTAboveIndicator,
 )
 from hazard.models.work_loss import WorkLossIndicator as _WorkLossIndicator
 from hazard.onboarder import Onboarder
@@ -68,6 +77,14 @@ class DaysTasAboveIndicator(IndicatorModelOnboarder):
         self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
 
 
+class DaysTasAboveIndicatorDeprecated(IndicatorModelOnboarder):
+    """Deprecated: superseded by DaysTasAboveIndicator (v3). Kept so that the existing v2 arrays remain in the inventory."""
+
+    def __init__(self, source_dir_base: Optional[str] = None):
+        self.model = _DaysTasAboveIndicatorDeprecated()
+        self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
+
+
 class DegreeDays(IndicatorModelOnboarder):
     def __init__(self, source_dir_base: Optional[str] = None):
         self.model = _DegreeDays()
@@ -80,9 +97,25 @@ class HeatingCoolingDegreeDays(IndicatorModelOnboarder):
         self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
 
 
+class HeatingCoolingDegreeDaysDeprecated(IndicatorModelOnboarder):
+    """Deprecated: superseded by HeatingCoolingDegreeDays (v3). Kept so that the existing v2 arrays remain in the inventory."""
+
+    def __init__(self, source_dir_base: Optional[str] = None):
+        self.model = _HeatingCoolingDegreeDaysDeprecated()
+        self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
+
+
 class WetBulbGlobeTemperatureAboveIndicator(IndicatorModelOnboarder):
+    """Deprecated: superseded by DaysWBGTAboveIndicator (v3). Kept so that the existing v2 arrays remain in the inventory."""
+
     def __init__(self, source_dir_base: Optional[str] = None):
         self.model = _WetBulbGlobeTemperatureAboveIndicator()
+        self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
+
+
+class DaysWBGTAboveIndicator(IndicatorModelOnboarder):
+    def __init__(self, source_dir_base: Optional[str] = None):
+        self.model = _DaysWBGTAboveIndicator()
         self.source = get_source_dataset_instance("NEX-GDDP-CMIP6", {})
 
 

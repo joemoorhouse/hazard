@@ -28,6 +28,8 @@ class NexGddpCmip6(OpenDataset):
     """
 
     bucket: str = "nex-gddp-cmip6"
+    # resolution of the (downscaled) data
+    resolution: str = "0.25°"
 
     def __init__(
         self,
