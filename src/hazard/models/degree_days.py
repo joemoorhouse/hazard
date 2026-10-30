@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import PurePosixPath
 from typing import Sequence
-from typing_extensions import Dict, Iterable, Optional
+from typing_extensions import Dict, Iterable, List, Optional
 
 import xarray as xr
 from dask.distributed import Client
@@ -14,6 +14,7 @@ from hazard.indicator_model import IndicatorModel
 from hazard.inventory import Colormap, HazardResource, MapInfo, Scenario
 from hazard.models.multi_year_average import (
     BatchItem,
+    RunConfig,
     ThresholdBasedAverageIndicator,
 )
 from hazard.models.indicator_conventions import (
@@ -33,13 +34,54 @@ class HeatingCoolingDegreeDays(ThresholdBasedAverageIndicator):
     """Cooling and heating degree days: the time integral of daily-mean temperature above or below thresholds.
 
     Two indicators are produced, "above" (cooling degree days) and "below" (heating degree
-    days), from the daily mean near-surface temperature ('tas').
+    days), from the daily mean near-surface temperature ('tas'), each with its own reference
+    temperatures (thresholds).
     """
 
     quantities = ["tas"]
 
-    # reference temperatures in °C, used for both cooling and heating degree days
-    default_thresholds = [16, 20, 24]
+    # reference temperatures in °C. Heating: from 10 °C, the balance point of well-insulated buildings
+    # with high internal gains, through the UK base of 15.5 °C and 18 °C (about 65 °F, the US base),
+    # to 22 °C for buildings heated to high internal temperatures or with low internal gains
+    default_heating_thresholds = [10, 12, 14, 15.5, 18, 22]
+    default_cooling_thresholds = [18, 22, 24]
+
+    def __init__(
+        self,
+        heating_thresholds: Optional[Sequence[float]] = None,
+        cooling_thresholds: Optional[Sequence[float]] = None,
+        run: Optional[RunConfig] = None,
+    ):
+        """Construct the model.
+
+        Args:
+            heating_thresholds (Optional[Sequence[float]], optional): Reference temperatures of the heating
+                degree days in °C. Defaults to default_heating_thresholds.
+            cooling_thresholds (Optional[Sequence[float]], optional): Reference temperatures of the cooling
+                degree days in °C. Defaults to default_cooling_thresholds.
+            run (Optional[RunConfig], optional): GCMs, scenarios, periods and source dataset of the
+                run. Defaults to RunConfig(), i.e. the v3 settings.
+
+        """
+        self.heating_thresholds = list(
+            self.default_heating_thresholds
+            if heating_thresholds is None
+            else heating_thresholds
+        )
+        self.cooling_thresholds = list(
+            self.default_cooling_thresholds
+            if cooling_thresholds is None
+            else cooling_thresholds
+        )
+        # the thresholds of the model: all of those of the resources
+        super().__init__(
+            thresholds=sorted(set(self.heating_thresholds + self.cooling_thresholds)),
+            run=run,
+        )
+
+    def resource_thresholds(self, key: str) -> List[float]:
+        """Thresholds of the cooling ("above") or heating ("below") degree days."""
+        return self.cooling_thresholds if key == "above" else self.heating_thresholds
 
     def _single_year_arrays(
         self, inputs: Dict[str, xr.DataArray]
@@ -49,11 +91,13 @@ class HeatingCoolingDegreeDays(ThresholdBasedAverageIndicator):
         return {
             "above": self._stack_thresholds(
                 lambda threshold: scale
-                * (tas_c - threshold).clip(min=0.0).sum(dim="time")
+                * (tas_c - threshold).clip(min=0.0).sum(dim="time"),
+                self.cooling_thresholds,
             ),
             "below": self._stack_thresholds(
                 lambda threshold: scale
-                * (threshold - tas_c).clip(min=0.0).sum(dim="time")
+                * (threshold - tas_c).clip(min=0.0).sum(dim="time"),
+                self.heating_thresholds,
             ),
         }
 
@@ -62,7 +106,7 @@ class HeatingCoolingDegreeDays(ThresholdBasedAverageIndicator):
         return {
             key: threshold_indicator_resource(
                 run=self.run,
-                thresholds=self.thresholds,
+                thresholds=self.resource_thresholds(key),
                 indicator_id=f"{name}_degree_days",
                 path_name=f"{name}_degree_days",
                 display_name=f"{name.capitalize()} degree days ({key} threshold in °C) "

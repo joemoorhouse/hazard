@@ -12,20 +12,18 @@ import pytest
 import s3fs
 import tempfile as temp
 import zarr
-from dask.distributed import Client, LocalCluster
 from hazard import get_hazards_onboarding
 from hazard.docs_store import DocStore
-from hazard.indicator_model import IndicatorModel
 from hazard.models.days_tas_above import DaysTasAboveIndicator
 from hazard.models.degree_days import HeatingCoolingDegreeDays
 from hazard.models.multi_year_average import (
     MULTI_MODEL_ID,
     RunConfig,
     ThresholdBasedAverageIndicator,
-    ThresholdBatchItem,
 )
-from hazard.models.prechunker import NexGddpCmip6CachedSource, download_paths
+from hazard.models.prechunker import NexGddpCmip6CachedSource
 from hazard.models.wet_bulb_globe_temp import DaysWBGTAboveIndicator
+from hazard.onboard import indicator_model_onboarder as onboarders
 from hazard.onboard.general_onboarding import initialize_class, onboard_hazards_to
 from hazard.sources.osc_zarr import OscZarr
 from hazard.utilities import s3_utilities, zarr_utilities
@@ -230,74 +228,6 @@ def test_backup_prod_to_local():
 
 
 @pytest.mark.manual
-def test_v3_heat_indicators_single_gcm(
-    test_output_dir, log_to_stdout, log_to_file, log_memory
-):
-    """Check the v3 chronic heat indicators end to end, for a single GCM, scenario and central year.
-
-    Runs heating/cooling degree days, days with tas/tasmax above thresholds and days with WBGT above
-    thresholds (each with the multi-model mean, which for a single GCM equals that GCM), writes
-    them to the local Zarr store zarr_dir and creates the map tiles. The inputs are read from NEX-GDDP-CMIP6
-    files cached in cache_dir, any not in the cache being downloaded (anonymously, from the public
-    bucket) when first opened; with prefetch, they are all downloaded in parallel first, which is
-    faster. The log is also written to test_output/logs/, with the memory use every 30 s; while
-    running, the dask dashboard (link in the log) shows the progress and memory of the tasks.
-    """
-    cache_dir = Path("/mnt/climatedata/climate_data/raw_downloads")
-    prefetch = False
-    create_maps = True
-    gcm, scenario, central_year = "ACCESS-CM2", "ssp585", 2030
-    # each year of WBGT holds about 6-8 GB in memory: limit the years calculated at once
-    threads = 2
-
-    run = RunConfig(gcms=[gcm], scenarios=[scenario], central_years=[central_year])
-    source = NexGddpCmip6CachedSource(cache_dir)
-    models: list[ThresholdBasedAverageIndicator] = [
-        HeatingCoolingDegreeDays(run=run),
-        DaysTasAboveIndicator(run=run),
-        DaysWBGTAboveIndicator(run=run),
-    ]
-    if prefetch:
-        years = models[0]._years(
-            source, ThresholdBatchItem(gcm, scenario, central_year)
-        )
-        quantities = sorted({q for model in models for q in model.quantities})
-        source.download_to_cache([gcm], [scenario], quantities, list(years))
-
-    zarr_dir = "/mnt/data/hazard-indicators/hazard.zarr"
-    target = OscZarr(store=zarr.DirectoryStore(zarr_dir))
-    with (
-        LocalCluster(
-            processes=False, n_workers=1, threads_per_worker=threads
-        ) as cluster,
-        Client(cluster) as client,
-    ):
-        logging.info(f"Dask dashboard: {client.dashboard_link}")
-        for model in models:
-            # debug_mode: raise errors rather than logging them and continuing
-            model.run_all(source, target, client=client, debug_mode=True)
-            if create_maps:
-                model.create_maps(target, target)
-
-    for model in models:
-        for resource in model.inventory():
-            for g in [gcm, MULTI_MODEL_ID]:
-                path = resource.path.format(gcm=g, scenario=scenario, year=central_year)
-                da = target.read(path)
-                assert da.dims[0] == "threshold"
-                assert list(da["threshold"].values) == model.thresholds
-                values = da.values
-                assert np.isfinite(values).any(), path
-                logging.info(
-                    f"{path} ({da.attrs['units']}): "
-                    + ", ".join(
-                        f"{t}{da['threshold'].attrs['units']}: max {np.nanmax(v):.1f}"
-                        for t, v in zip(model.thresholds, values, strict=True)
-                    )
-                )
-
-
-@pytest.mark.manual
 def test_v3_heat_indicators_prefetch(log_to_stdout, log_to_file):
     """Download to cache_dir all the NEX-GDDP-CMIP6 files needed for the full v3 chronic heat run.
 
@@ -305,10 +235,11 @@ def test_v3_heat_indicators_prefetch(log_to_stdout, log_to_file):
     days with tas/tasmax above thresholds and days with WBGT above thresholds), for every GCM, scenario
     and year averaged in the default RunConfig. Files already in the cache are skipped, so this can be
     re-run (e.g. after a failure) to fetch only what is missing. Run with dry_run = True first to see
-    the number of files to download.
+    the number of files to download. (Onboarding with a download_dir also downloads the files, but one
+    indicator at a time.)
     """
     cache_dir = Path("/mnt/climatedata/climate_data/raw_downloads")
-    dry_run = False
+    dry_run = True
 
     run = RunConfig()
     source = NexGddpCmip6CachedSource(cache_dir)
@@ -317,23 +248,78 @@ def test_v3_heat_indicators_prefetch(log_to_stdout, log_to_file):
         DaysTasAboveIndicator(run=run),
         DaysWBGTAboveIndicator(run=run),
     ]
-    quantities = sorted({q for model in models for q in model.quantities})
-    # a set, since the averaging periods of central years can overlap
-    paths = sorted(
-        {
-            source._path(item.gcm, item.scenario, quantity, year)
-            for item in models[0].batch_items()
-            for year in models[0]._years(source, item)
-            for quantity in quantities
-        }
+    inputs = {i for model in models for i in model.inputs(source)}
+    source.download_inputs(inputs, dry_run=dry_run)
+
+
+@pytest.mark.manual
+@pytest.mark.parametrize("batch", ["single_gcm", "full"])
+def test_v3_heat_indicators(batch, log_to_stdout, log_to_file, log_memory):
+    """Onboard the v3 chronic heat indicators like any other hazards, for a single GCM or the full batch.
+
+    That is, heating/cooling degree days, days with tas/tasmax above thresholds and days with WBGT
+    above thresholds, with the multi-model means (for a single GCM, equal to that GCM) and map tiles,
+    onboarded to the local Zarr store zarr_dir; the inventory (inventory.json) is written next to it.
+    The batches are:
+        single_gcm: ACCESS-CM2, ssp585, central year 2030; a quick end-to-end check.
+        full: all GCMs, scenarios and central years of the default RunConfig. Also as:
+
+            osc_hazard onboard --local --source-dir-base=... --download-dir=<cache_dir> \\
+                HeatingCoolingDegreeDays DaysTasAboveIndicator DaysWBGTAboveIndicator
+
+    The onboarders are constructed here with the run settings and dask parameters, then passed to
+    onboard_hazards_to. The inputs are downloaded (prepare) to cache_dir, files already there being
+    skipped, then read from there. A hazard that fails is logged and the others are still onboarded;
+    the arrays of all are then checked. The log, with the memory use every 30 s, is also written to
+    test_output/logs/.
+    """
+    cache_dir = "/mnt/climatedata/climate_data/raw_downloads"
+    zarr_dir = "/mnt/data/hazard-indicators/hazard.zarr"
+    # each year of WBGT holds about 6-8 GB in memory: limit the years calculated at once
+    dask_cluster_kwargs = {"n_workers": 1, "threads_per_worker": 2}
+    run = {
+        "single_gcm": RunConfig(
+            gcms=["ACCESS-CM2"], scenarios=["ssp585"], central_years=[2030]
+        ),
+        "full": RunConfig(),
+    }[batch]
+
+    hazards: list[onboarders.ThresholdIndicatorOnboarder] = [
+        cls(run=run, dask_cluster_kwargs=dask_cluster_kwargs)
+        for cls in [
+            onboarders.HeatingCoolingDegreeDays,
+            onboarders.DaysTasAboveIndicator,
+            onboarders.DaysWBGTAboveIndicator,
+        ]
+    ]
+    target = OscZarr(store=zarr.DirectoryStore(zarr_dir))
+    onboard_hazards_to(
+        target=target,
+        doc_store=DocStore(local_path=os.path.dirname(zarr_dir)),
+        source_dir_base=os.path.dirname(zarr_dir),
+        hazards=hazards,  # type: ignore[arg-type]
+        download_dir=cache_dir,
     )
-    missing = [p for p in paths if not (cache_dir / PurePosixPath(p).name).exists()]
-    logging.info(
-        f"{len(paths)} files needed for GCMs {', '.join(run.gcms)}, quantities {', '.join(quantities)}: "
-        f"{len(paths) - len(missing)} in the cache, {len(missing)} to download"
-    )
-    if not dry_run:
-        download_paths(missing, cache_dir, source.client)
+
+    for hazard in hazards:
+        model = hazard.model
+        for key, resource in model.resources.items():
+            thresholds = model.resource_thresholds(key)
+            for gcm in [*run.gcms, MULTI_MODEL_ID]:
+                for scenario, year in run.scenario_years():
+                    path = resource.path.format(gcm=gcm, scenario=scenario, year=year)
+                    da = target.read(path)
+                    assert da.dims[0] == "threshold"
+                    assert list(da["threshold"].values) == thresholds
+                    values = da.values
+                    assert np.isfinite(values).any(), path
+                    logging.info(
+                        f"{path} ({da.attrs['units']}): "
+                        + ", ".join(
+                            f"{t}{da['threshold'].attrs['units']}: max {np.nanmax(v):.1f}"
+                            for t, v in zip(thresholds, values, strict=True)
+                        )
+                    )
 
 
 @pytest.mark.manual

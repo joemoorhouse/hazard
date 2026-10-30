@@ -343,6 +343,10 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
         )
         self.resources = self._resources()
 
+    def resource_thresholds(self, key: str) -> List[float]:
+        """Thresholds of the resource with key (see _resources): by default, the thresholds of the model."""
+        return self.thresholds
+
     @property
     @abstractmethod
     def quantities(self) -> Sequence[str]:
@@ -381,6 +385,17 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
         """Get the inventory item(s)."""
         return list(self.resources.values())
 
+    def inputs(self, source: OpenDataset) -> List[Tuple[str, str, str, int]]:
+        """(GCM, scenario, quantity, year) of each input of the run, as opened from source; each once."""
+        return sorted(
+            {
+                (item.gcm, item.scenario, quantity, year)
+                for item in self.batch_items()
+                for year in self._years(source, item)
+                for quantity in self.quantities
+            }
+        )
+
     def create_maps(self, source: OscZarr, target: OscZarr):
         """Create map images."""
         for resource in self.inventory():
@@ -403,7 +418,10 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
         name = type(self).__name__
         logger.info(
             f"{name}: starting run of {len(list(self.batch_items()))} batch items, indicators "
-            f"{', '.join(r.indicator_id for r in self.resources.values())}, thresholds {self.thresholds}"
+            + ", ".join(
+                f"{r.indicator_id} (thresholds {self.resource_thresholds(key)})"
+                for key, r in self.resources.items()
+            )
         )
         start = time.perf_counter()
         super().run_all(source, target, client=client, debug_mode=debug_mode)
@@ -492,13 +510,19 @@ class ThresholdBasedAverageIndicator(MultiYearAverageIndicatorBase[ThresholdBatc
             raise ValueError("unexpected year found")
 
     def _stack_thresholds(
-        self, threshold_fn: Callable[[float], xr.DataArray]
+        self,
+        threshold_fn: Callable[[float], xr.DataArray],
+        thresholds: Optional[Sequence[float]] = None,
     ) -> xr.DataArray:
-        """Stack the (lat, lon) arrays given by threshold_fn for each threshold along a new "threshold" dimension."""
+        """Stack the (lat, lon) arrays given by threshold_fn for each threshold along a new "threshold" dimension.
+
+        The thresholds default to those of the model.
+        """
+        thresholds = self.thresholds if thresholds is None else list(thresholds)
         return xr.concat(
-            [threshold_fn(threshold) for threshold in self.thresholds],
+            [threshold_fn(threshold) for threshold in thresholds],
             dim=xr.DataArray(
-                self.thresholds,
+                thresholds,
                 dims="threshold",
                 name="threshold",
                 attrs={"units": self.threshold_units},

@@ -70,8 +70,9 @@ def threshold_indicator_resource(
                 max_value=max_value,
                 max_index=255,
                 units=units,
+                # the indicators can be zero, so cannot be shown on a log scale
+                scaling="linear",
             ),
-            bounds=[(-180.0, 85.0), (180.0, 85.0), (180.0, -60.0), (-180.0, -60.0)],
             bbox=[-180.0, -60.0, 180.0, 85.0],
             index_values=list(thresholds),
             path="maps/" + path + "_map",

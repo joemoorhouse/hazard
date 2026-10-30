@@ -9,6 +9,7 @@ import zarr  # type: ignore
 
 from hazard.models.days_tas_above import DaysTasAboveIndicator  # type: ignore
 from hazard.models.degree_days import HeatingCoolingDegreeDays
+from hazard.onboard.indicator_model_onboarder import ThresholdIndicatorOnboarder
 from hazard.models.deprecated_v2 import (
     DaysTasAboveIndicatorDeprecated,
     WetBulbGlobeTemperatureAboveIndicator,
@@ -184,30 +185,30 @@ def test_days_wbgt_v3_multi_model_missing():
         (
             DaysWBGTAboveIndicator,
             ["days_wbgt_mean_above", "days_wbgt_max_above"],
-            [20, 24, 26, 28, 30, 32, 34, 36, 38, 40, 44],
+            [[20, 24, 26, 28, 30, 32, 34, 36, 38, 40, 44]] * 2,
         ),
         (
             DaysTasAboveIndicator,
             ["days_tas_above", "days_tasmax_above"],
-            [25, 30, 35, 40, 45, 50, 55],
+            [[25, 30, 35, 40, 45, 50, 55]] * 2,
         ),
         (
             HeatingCoolingDegreeDays,
             ["cooling_degree_days", "heating_degree_days"],
-            [16, 20, 24],
+            [[18, 22, 24], [10, 12, 14, 15.5, 18, 22]],
         ),
     ],
 )
 def test_v3_inventory(model_class, indicator_ids, thresholds):
-    """Resources follow the v3 conventions."""
+    """Resources follow the v3 conventions; thresholds are given for each resource."""
     model = model_class()
     resources = list(model.inventory())
     assert [r.indicator_id for r in resources] == indicator_ids
-    for r in resources:
+    for r, resource_thresholds in zip(resources, thresholds, strict=True):
         assert r.path.startswith("chronic_heat/osc/v3/")
         assert r.map is not None and r.map.path == "maps/" + r.path + "_map"
         assert r.map.source == "map_array_pyramid"
-        assert r.map.index_values == thresholds
+        assert r.map.index_values == resource_thresholds
         assert r.resolution == "0.25°"
         assert r.params["gcm"] == [
             MULTI_MODEL_ID,
@@ -339,6 +340,41 @@ def test_v3_source_resolution_mismatch():
     with pytest.raises(ValueError, match="2.2 km"):
         model.run_all(source, target, debug_mode=True)
     assert target.datasets == {}
+
+
+def test_v3_inputs():
+    """The inputs of a run: each quantity of each year averaged, for each GCM and scenario, once."""
+    run = RunConfig(
+        gcms=["ACCESS-CM2"],
+        scenarios=["historical", "ssp585"],
+        central_years=[2030, 2040],
+        window_years=20,
+    )
+    inputs = DaysTasAboveIndicator(run=run).inputs(None)  # type: ignore[arg-type]
+    # historical: 1995-2014; ssp585: 2020-2039 and 2030-2049, overlapping
+    years = list(range(1995, 2015)) + list(range(2020, 2050))
+    assert len(inputs) == len(years) * 2
+    assert {(s, y) for _, s, _, y in inputs} == {
+        ("historical" if y < 2015 else "ssp585", y) for y in years
+    }
+    assert {q for _, _, q, _ in inputs} == {"tas", "tasmax"}
+
+
+def test_v3_onboarder():
+    """A v3 indicator is onboarded like any other hazard, through its onboarder."""
+    gcms = ["ACCESS-CM2"]
+    run = RunConfig(
+        window_years=2, gcms=gcms, scenarios=["ssp585"], central_years=[2030]
+    )
+    onboarder = ThresholdIndicatorOnboarder(DaysTasAboveIndicator(run=run))
+    onboarder.source = create_test_source_tas_tasmax_hurs(gcms)
+    target = TestTarget()
+    onboarder.onboard(target)
+    assert set(target.datasets) == {
+        f"chronic_heat/osc/v3/{name}_{gcm}_ssp585_2030"
+        for name in ["days_tas_above", "days_tasmax_above"]
+        for gcm in gcms + [MULTI_MODEL_ID]
+    }
 
 
 def test_run_config():

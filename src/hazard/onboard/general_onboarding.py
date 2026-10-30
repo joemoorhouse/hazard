@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile as temp
 from pathlib import Path
-from typing_extensions import Dict, Optional, Sequence, Type
+from typing_extensions import Dict, Optional, Sequence, Type, Union
 
 import fsspec.implementations.local as local
 import zarr
@@ -90,7 +90,7 @@ def onboard_hazards_to(
     target: OscZarr,
     doc_store: DocStore,
     source_dir_base: str,
-    hazards: Sequence[str] = [],
+    hazards: Sequence[Union[str, Onboarder]] = [],
     download_dir: Optional[str] = None,
     force_download=False,
     force_prepare=False,
@@ -112,8 +112,9 @@ def onboard_hazards_to(
         target: Target to onboard hazard indicators to.
         doc_store: DocStore to update with the resulting inventory.
         source_dir_base: Base directory for source data.
-        hazards: Names of the hazards to onboard, e.g. as returned by
-            get_hazards_onboarding().keys().
+        hazards: Hazards to onboard: names, e.g. as returned by get_hazards_onboarding().keys(),
+            or onboarders already constructed (e.g. with settings other than the defaults, such
+            as the GCMs and years of an indicator model).
         download_dir: Path to the directory used by each hazard's prepare() step. Most
             hazards download their source data into this directory; a few instead
             require the source file(s) to already be present there and raise if they
@@ -129,14 +130,17 @@ def onboard_hazards_to(
     failed_hazards = []
 
     for hazard in hazards:
-        if hazard not in hazard_map:
+        name = hazard if isinstance(hazard, str) else type(hazard).__name__
+        if isinstance(hazard, str) and hazard not in hazard_map:
             logger.warning(f"Unknown hazard: {hazard}")
-            failed_hazards.append(hazard)
+            failed_hazards.append(name)
             continue
 
         try:
-            model = initialize_class(
-                hazard, hazard_map, source_dir_base=source_dir_base
+            model = (
+                initialize_class(hazard, hazard_map, source_dir_base=source_dir_base)
+                if isinstance(hazard, str)
+                else hazard
             )
 
             if not model.is_prepared() or force_prepare or force_download:
@@ -154,11 +158,11 @@ def onboard_hazards_to(
             for resource in model.inventory():
                 updt_inv_hazards.append(resource)
 
-            logger.info(f"Successfully onboarded {hazard}")
+            logger.info(f"Successfully onboarded {name}")
 
         except Exception:
-            logger.error(f"Failed to onboard {hazard}", exc_info=True)
-            failed_hazards.append(hazard)
+            logger.error(f"Failed to onboard {name}", exc_info=True)
+            failed_hazards.append(name)
 
     doc_store.update_inventory(updt_inv_hazards)
     logger.info("Inventory updated successfully")

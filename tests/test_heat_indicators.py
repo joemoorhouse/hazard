@@ -83,11 +83,13 @@ def test_heating_cooling_degree_days_v3_mocked():
     gcms = ["ACCESS-CM2", "EC-Earth3"]
     scenario = "ssp585"
     year = 2030
-    thresholds = [16.0, 20.0, 24.0]
+    # different thresholds for heating and cooling
+    thresholds = {"cooling": [18.0, 24.0], "heating": [10.0, 15.5, 18.0]}
     source = create_test_source_tas_tasmax_hurs(gcms)
     target = TestTarget()
     model = HeatingCoolingDegreeDays(
-        thresholds=thresholds,
+        heating_thresholds=thresholds["heating"],
+        cooling_thresholds=thresholds["cooling"],
         run=RunConfig(
             window_years=2,
             gcms=gcms,
@@ -111,7 +113,7 @@ def test_heating_cooling_degree_days_v3_mocked():
                             sign * (tas - (th + 273.15)),
                             0.0,
                         ).sum(dim="time")
-                        for th in thresholds
+                        for th in thresholds[name]
                     ]
                 )
                 / 2.0
@@ -124,7 +126,7 @@ def test_heating_cooling_degree_days_v3_mocked():
                 f"chronic_heat/osc/v3/{name}_degree_days_{gcm}_{scenario}_{year}"
             ]
             assert result.dims[0] == "threshold"
-            assert list(result["threshold"].values) == thresholds
+            assert list(result["threshold"].values) == thresholds[name]
             assert result["threshold"].attrs["units"] == "°C"
             assert result.attrs["units"] == "°C day"
             np.testing.assert_allclose(result.values, expected[name], rtol=1e-5)

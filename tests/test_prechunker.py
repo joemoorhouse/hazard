@@ -83,3 +83,20 @@ def test_cached_source_can_be_pickled(tmp_path: Path):
     assert copy._client is None  # the S3 client is not pickled
     with copy.open_dataset_year("ACCESS-CM2", "ssp585", "tas", 2030) as ds:
         assert float(ds.tas.max()) == 300.0
+
+
+def test_cached_source_download_inputs(tmp_path: Path):
+    """download_inputs downloads only the files not already in the cache, each once; dry_run downloads nothing."""
+    client = _FakeS3Client()
+    source = NexGddpCmip6CachedSource(tmp_path, client=client)
+    inputs = [("ACCESS-CM2", "ssp585", "tas", y) for y in [2030, 2031, 2031]]
+    assert len(source.download_inputs(inputs, dry_run=True)) == 2
+    assert client.downloaded_keys == []
+    with source.open_dataset_year("ACCESS-CM2", "ssp585", "tas", 2030):
+        pass  # downloads 2030 to the cache
+    missing = source.download_inputs(inputs)
+    assert [Path(p).name for p in missing] == [
+        "tas_day_ACCESS-CM2_ssp585_r1i1p1f1_gn_2031_v2.0.nc"
+    ]
+    assert len(client.downloaded_keys) == 2
+    assert source.download_inputs(inputs) == []

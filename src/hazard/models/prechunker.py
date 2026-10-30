@@ -11,9 +11,11 @@ from typing import (
     Dict,
     Generator,
     Iterable,
+    List,
     MutableMapping,
     Protocol,
     Sequence,
+    Tuple,
 )
 
 import boto3
@@ -167,6 +169,24 @@ class NexGddpCmip6CachedSource(CachingSource):
             for g in gcms
         ]
         download_paths(paths, self.cache_dir, self.client)
+
+    def download_inputs(
+        self, inputs: Iterable[Tuple[str, str, str, int]], dry_run: bool = False
+    ) -> List[str]:
+        """Download, in parallel, the files of inputs (GCM, scenario, quantity, year) not already in the cache.
+
+        Returns:
+            List[str]: Paths of the files that were (with dry_run, would be) downloaded.
+        """
+        paths = sorted({self._path(*i) for i in inputs})
+        missing = [p for p in paths if not (self.cache_dir / Path(p).name).exists()]
+        logger.info(
+            f"{len(paths)} files needed: {len(paths) - len(missing)} in the cache {self.cache_dir}, "
+            f"{len(missing)} to download"
+        )
+        if not dry_run and missing:
+            download_paths(missing, self.cache_dir, self.client)
+        return missing
 
     def _path(self, gcm: str, scenario: str, quantity: str, year: int):
         if year < 2015:
