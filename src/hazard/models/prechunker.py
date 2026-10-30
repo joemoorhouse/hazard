@@ -68,7 +68,8 @@ def download_single(path: str, cache_dir: Path, client: Any):
 
 def download_paths(paths: Sequence[str], cache_dir: Path, client: Any):
     result = {}
-    with futures.ThreadPoolExecutor(max_workers=10) as executor:
+    executor = futures.ThreadPoolExecutor(max_workers=8)
+    try:
         future_to_key = {
             executor.submit(download_single, p, cache_dir, client): p for p in paths
         }
@@ -79,6 +80,11 @@ def download_paths(paths: Sequence[str], cache_dir: Path, client: Any):
                 result[key] = exception
             else:
                 result[key] = future.result()
+    except BaseException:
+        # e.g. KeyboardInterrupt: do not start the queued downloads (those in progress still complete)
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown()
     if any(isinstance(v, Exception) for v in result.values()):
         for k, v in result.items():
             if isinstance(v, Exception):
@@ -178,6 +184,8 @@ class NexGddpCmip6CachedSource(CachingSource):
         Returns:
             List[str]: Paths of the files that were (with dry_run, would be) downloaded.
         """
+        if not dry_run:
+            self.remove_stale_downloads()
         paths = sorted({self._path(*i) for i in inputs})
         missing = [p for p in paths if not (self.cache_dir / Path(p).name).exists()]
         logger.info(
@@ -187,6 +195,29 @@ class NexGddpCmip6CachedSource(CachingSource):
         if not dry_run and missing:
             download_paths(missing, self.cache_dir, self.client)
         return missing
+
+    def remove_stale_downloads(self, max_age_s: float = 3600) -> List[Path]:
+        """Remove the partial (.download) files of interrupted downloads not modified for max_age_s.
+
+        Partial files are never used (a download starts again from the beginning), so this only
+        tidies the cache. Recently modified ones are kept, as another process may be downloading them.
+
+        Returns:
+            List[Path]: The files removed.
+        """
+        now = time.time()
+        stale = [
+            f
+            for f in self.cache_dir.glob("*.download")
+            if now - f.stat().st_mtime > max_age_s
+        ]
+        for f in stale:
+            f.unlink(missing_ok=True)
+        if stale:
+            logger.info(
+                f"removed {len(stale)} partial file(s) of interrupted downloads from {self.cache_dir}"
+            )
+        return stale
 
     def _path(self, gcm: str, scenario: str, quantity: str, year: int):
         if year < 2015:

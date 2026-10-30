@@ -1,14 +1,18 @@
+import os
 import pickle
 import threading
 import time
+from concurrent import futures
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 import cloudpickle
 import numpy as np
+import pytest
 import xarray as xr
 
-from hazard.models.prechunker import NexGddpCmip6CachedSource
+from hazard.models.prechunker import NexGddpCmip6CachedSource, download_paths
 
 
 class _FakeS3Client:
@@ -100,3 +104,36 @@ def test_cached_source_download_inputs(tmp_path: Path):
     ]
     assert len(client.downloaded_keys) == 2
     assert source.download_inputs(inputs) == []
+
+
+def test_cached_source_remove_stale_downloads(tmp_path: Path):
+    """The partial files of interrupted downloads are removed once stale; recent ones are kept, and complete files never."""
+    source = NexGddpCmip6CachedSource(tmp_path, client=_FakeS3Client())
+    stale, recent, complete = (
+        tmp_path / "a.nc.download",
+        tmp_path / "b.nc.download",
+        tmp_path / "c.nc",
+    )
+    for f in [stale, recent, complete]:
+        f.write_bytes(b"x")
+    hour_ago = time.time() - 3601
+    os.utime(stale, (hour_ago, hour_ago))
+    os.utime(complete, (hour_ago, hour_ago))
+    assert source.remove_stale_downloads() == [stale]
+    assert not stale.exists() and recent.exists() and complete.exists()
+
+
+def test_download_paths_interrupted(tmp_path: Path):
+    """If interrupted, download_paths does not start the downloads still queued."""
+    client = _FakeS3Client()
+    source = NexGddpCmip6CachedSource(tmp_path, client=client)
+    paths = [source._path("ACCESS-CM2", "ssp585", "tas", y) for y in range(2030, 2050)]
+
+    def interrupt(fs, *args, **kwargs):
+        raise KeyboardInterrupt
+
+    with mock.patch.object(futures, "as_completed", interrupt):
+        with pytest.raises(KeyboardInterrupt):
+            download_paths(paths, tmp_path, client)
+    # at most the 8 downloads started before the interrupt
+    assert len(client.downloaded_keys) <= 8
