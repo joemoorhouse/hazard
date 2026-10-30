@@ -1,3 +1,4 @@
+import json
 import os
 
 import fsspec.implementations.local as local  # type: ignore
@@ -9,6 +10,10 @@ import zarr  # type: ignore
 
 from hazard.models.days_tas_above import DaysTasAboveIndicator  # type: ignore
 from hazard.models.degree_days import HeatingCoolingDegreeDays
+import typer
+
+from hazard.cli import app
+from hazard.onboard import indicator_model_onboarder as onboarders
 from hazard.onboard.indicator_model_onboarder import ThresholdIndicatorOnboarder
 from hazard.models.deprecated_v2 import (
     DaysTasAboveIndicatorDeprecated,
@@ -375,6 +380,63 @@ def test_v3_onboarder():
         for name in ["days_tas_above", "days_tasmax_above"]
         for gcm in gcms + [MULTI_MODEL_ID]
     }
+
+
+def test_v3_onboard_cli(tmp_path, monkeypatch):
+    """A v3 indicator is onboarded through the generic CLI, with the settings of its run given as JSON."""
+    gcms = ["ACCESS-CM2"]
+    monkeypatch.setattr(
+        onboarders,
+        "get_source_dataset_instance",
+        lambda *args: create_test_source_tas_tasmax_hurs(gcms),
+    )
+    # the mocked 3x3 grid is too small for map tiles (maximum zoom level 0)
+    monkeypatch.setattr(
+        onboarders.ThresholdIndicatorOnboarder,
+        "create_maps",
+        lambda *args, **kwargs: None,
+    )
+    hazard_kwargs = {
+        "run": {
+            "window_years": 2,
+            "gcms": gcms,
+            "scenarios": ["ssp585"],
+            "central_years": [2030],
+        },
+        "dask_cluster_kwargs": {"n_workers": 1, "threads_per_worker": 1},
+    }
+    store = tmp_path / "store"
+    # run the command directly: CliRunner's capture of output conflicts with pytest's live logging
+    cli = typer.main.get_command(app)
+    cli.main(
+        [
+            "onboard",
+            "DaysTasAboveIndicator",
+            "--store",
+            str(store),
+            "--source-dir-base",
+            str(tmp_path),
+            "--hazard-kwargs",
+            json.dumps(hazard_kwargs),
+        ],
+        standalone_mode=False,
+    )
+    root = zarr.open_group(zarr.DirectoryStore(str(store)), mode="r")
+    for gcm in gcms + [MULTI_MODEL_ID]:
+        assert f"chronic_heat/osc/v3/days_tas_above_{gcm}_ssp585_2030" in root
+    inventory = json.loads((store / "inventory.json").read_text())
+    assert {r["indicator_id"] for r in inventory["resources"]} == {
+        "days_tas_above",
+        "days_tasmax_above",
+    }
+    # invalid JSON, or JSON that is not an object, is rejected before onboarding
+    for bad in ["{run:", "[1, 2]"]:
+        with pytest.raises(typer.BadParameter):
+            cli.main(
+                ["onboard", "DaysTasAboveIndicator", "--store", str(store)]
+                + ["--hazard-kwargs", bad],
+                standalone_mode=False,
+            )
 
 
 def test_run_config():

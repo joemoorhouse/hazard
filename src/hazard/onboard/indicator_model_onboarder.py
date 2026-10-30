@@ -11,7 +11,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 from dask.distributed import Client, LocalCluster
 from typing_extensions import Iterable
@@ -141,15 +141,22 @@ class ThresholdIndicatorOnboarder(IndicatorModelOnboarder):
         return False
 
 
+def _run_config(run: Optional[Union[RunConfig, Dict[str, Any]]]) -> Optional[RunConfig]:
+    """The RunConfig of run, which can also be given as a dict of its fields (e.g. parsed from the JSON of the CLI)."""
+    return RunConfig(**run) if isinstance(run, dict) else run
+
+
 class DaysTasAboveIndicator(ThresholdIndicatorOnboarder):
     def __init__(
         self,
         source_dir_base: Optional[str] = None,
         *,
-        run: Optional[RunConfig] = None,
+        run: Optional[Union[RunConfig, Dict[str, Any]]] = None,
         dask_cluster_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(_DaysTasAboveIndicator(run=run), dask_cluster_kwargs)
+        super().__init__(
+            _DaysTasAboveIndicator(run=_run_config(run)), dask_cluster_kwargs
+        )
 
 
 class DaysTasAboveIndicatorDeprecated(IndicatorModelOnboarder):
@@ -171,10 +178,12 @@ class HeatingCoolingDegreeDays(ThresholdIndicatorOnboarder):
         self,
         source_dir_base: Optional[str] = None,
         *,
-        run: Optional[RunConfig] = None,
+        run: Optional[Union[RunConfig, Dict[str, Any]]] = None,
         dask_cluster_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(_HeatingCoolingDegreeDays(run=run), dask_cluster_kwargs)
+        super().__init__(
+            _HeatingCoolingDegreeDays(run=_run_config(run)), dask_cluster_kwargs
+        )
 
 
 class HeatingCoolingDegreeDaysDeprecated(IndicatorModelOnboarder):
@@ -198,10 +207,12 @@ class DaysWBGTAboveIndicator(ThresholdIndicatorOnboarder):
         self,
         source_dir_base: Optional[str] = None,
         *,
-        run: Optional[RunConfig] = None,
+        run: Optional[Union[RunConfig, Dict[str, Any]]] = None,
         dask_cluster_kwargs: Optional[Dict[str, Any]] = None,
     ):
-        super().__init__(_DaysWBGTAboveIndicator(run=run), dask_cluster_kwargs)
+        super().__init__(
+            _DaysWBGTAboveIndicator(run=_run_config(run)), dask_cluster_kwargs
+        )
 
 
 class WorkLossIndicator(IndicatorModelOnboarder):

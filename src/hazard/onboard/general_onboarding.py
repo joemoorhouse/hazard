@@ -4,7 +4,7 @@ import logging
 import os
 import tempfile as temp
 from pathlib import Path
-from typing_extensions import Dict, Optional, Sequence, Type, Union
+from typing_extensions import Any, Dict, Optional, Sequence, Type, Union
 
 import fsspec.implementations.local as local
 import zarr
@@ -27,6 +27,8 @@ def onboard_hazards(
     download_dir: Optional[str] = None,
     force_download=False,
     force_prepare=False,
+    store: Optional[str] = None,
+    hazard_kwargs: Optional[Dict[str, Any]] = None,
 ):
     """Onboards data to a local or S3 target based on the provided paths and for a series of given hazards.
 
@@ -54,6 +56,12 @@ def onboard_hazards(
             Defaults to False.
         force_prepare: If True, forces the preparation of hazard data even if it is ready.
             Defaults to False.
+        store: Path of a local directory to onboard to: the zarr store and inventory are written
+            there. If given, this is the target regardless of local and credentials_path.
+            Defaults to None.
+        hazard_kwargs: Keyword arguments passed to the constructor of each hazard's onboarder
+            (in addition to source_dir_base), e.g. {"run": {"gcms": ["ACCESS-CM2"]}} for the
+            threshold-based indicators. Defaults to None.
 
     """
     if not source_dir_base:
@@ -61,7 +69,11 @@ def onboard_hazards(
     else:
         source_dir = source_dir_base
 
-    if local:
+    if store is not None:
+        logger.info(f"Using local store {store} as target")
+        target = OscZarr(store=zarr.DirectoryStore(store))
+        doc_store = DocStore(local_path=store)
+    elif local:
         logger.info("Using local storage as target")
         store = zarr.DirectoryStore(source_dir)
         target = OscZarr(store=store)
@@ -83,6 +95,7 @@ def onboard_hazards(
         download_dir,
         force_download,
         force_prepare,
+        hazard_kwargs,
     )
 
 
@@ -94,6 +107,7 @@ def onboard_hazards_to(
     download_dir: Optional[str] = None,
     force_download=False,
     force_prepare=False,
+    hazard_kwargs: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Onboards a series of given hazards to an explicitly provided target and doc_store.
 
@@ -123,6 +137,9 @@ def onboard_hazards_to(
             Defaults to False.
         force_prepare: If True, forces the preparation of hazard data even if it is ready.
             Defaults to False.
+        hazard_kwargs: Keyword arguments passed to the constructor of each hazard given by name
+            (in addition to source_dir_base). Not used for onboarders already constructed.
+            Defaults to None.
 
     """
     updt_inv_hazards = []
@@ -138,7 +155,12 @@ def onboard_hazards_to(
 
         try:
             model = (
-                initialize_class(hazard, hazard_map, source_dir_base=source_dir_base)
+                initialize_class(
+                    hazard,
+                    hazard_map,
+                    source_dir_base=source_dir_base,
+                    **(hazard_kwargs or {}),
+                )
                 if isinstance(hazard, str)
                 else hazard
             )
@@ -178,13 +200,14 @@ def initialize_class(
     hazard: str,
     hazard_map: Dict[str, Type[Onboarder]],
     source_dir_base: str,
+    **kwargs: Any,
 ) -> Onboarder:
-    """Initialize the hazard model class based on the hazard name, passing directory if needed."""
+    """Initialize the hazard model class based on the hazard name, passing directory if needed, and any other keyword arguments."""
     hazard_class = hazard_map.get(hazard)
     if not hazard_class:
         raise ValueError(f"Hazard '{hazard}' not recognized.")
 
-    return hazard_class(source_dir_base)
+    return hazard_class(source_dir_base, **kwargs)
 
 
 def load_hazards(hazard_list_path: str):
